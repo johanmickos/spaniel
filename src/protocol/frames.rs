@@ -183,7 +183,16 @@ impl Data {
 
 impl FrameExt for StreamRequest {
     fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {
-        unimplemented!()
+        if src.remaining() < 8 {
+            return Err(FramingError::InvalidFrame);
+        }
+        let stream_id: StreamId = src.get_u32_be().into();
+        let credit = src.get_u32_be();
+        let stream_req = StreamRequest {
+            stream_id,
+            credit_capacity: credit,
+        };
+        Ok(Frame::StreamRequest(stream_req))
     }
 
     fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {

@@ -157,3 +157,23 @@ impl futures::Stream for IncomingStreams {
         Ok(Async::Ready(Some(stream)))
     }
 }
+
+impl futures::Stream for StreamRef {
+    type Item = frames::Frame;
+    type Error = (); // TOODO
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        let mut ctx = self.ctx.lock().unwrap();
+        let ctx = &mut *ctx;
+
+        let me = {
+            match ctx.get_stream_state_mut(&self.stream_id) {
+                None => return Err(()),
+                Some(stream_state) => stream_state,
+            }
+        };
+        me.data.poll().map_err(|why| {
+            println!("Error polling for data; {:?}", why);
+        })
+    }
+}

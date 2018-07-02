@@ -20,6 +20,8 @@ use futures::sync::mpsc::Sender;
 use futures::sync::mpsc;
 use futures::sync::mpsc::Receiver;
 use std::collections::VecDeque;
+use flow_control::Credits;
+use futures::sync::mpsc::TrySendError;
 
 
 type ConnectionId = u32;
@@ -52,6 +54,8 @@ pub struct ConnectionContext {
     err: Option<ConnectionError>,
     /// Stream management store
     stream_states: HashMap<StreamId, StreamState>,
+    /// Channels for forwarding decoded frames to application
+    stream_senders: HashMap<StreamId, Sender<frames::Frame>>,
     /// Channel for submitting frames for writing over the network
     outbound: Sender<Frame>,
     outbound_listener: Receiver<Frame>,
@@ -79,6 +83,7 @@ impl ConnectionContext {
             conn_task: None,
             new_stream_task: None,
             stream_states: HashMap::new(),
+            stream_senders: HashMap::new(),
             outbound: tx,
             outbound_listener: rx,
             new_streams: VecDeque::new(),
@@ -102,7 +107,24 @@ impl ConnectionContext {
     }
 
     fn on_stream_request(&mut self, request: frames::StreamRequest) -> Result<AsyncHandle<Frame>, ConnectionError> {
-        // TODO
+        let stream_id = request.stream_id;
+        match self.stream_states.get_mut(&stream_id) {
+            Some(_) => return Err(ConnectionError::InvalidStreamId),
+            None => (),
+        }
+        let (tx, rx) = mpsc::channel(1);
+        let state = StreamState {
+            credits: Credits::new(request.credit_capacity),
+            data_buffer: VecDeque::new(),
+            data: rx,
+            send_task: None,
+            recv_task: None,
+        };
+        self.stream_states.insert(stream_id, state);
+        self.stream_senders.insert(stream_id, tx);
+
+        self.new_streams.push_back(request);
+        self.notify_new_stream_task();
         Ok(AsyncHandle::Ready)
     }
 
@@ -111,8 +133,29 @@ impl ConnectionContext {
         Ok(AsyncHandle::Ready)
     }
 
-    fn on_data(&mut self, request: frames::Data) -> Result<AsyncHandle<Frame>, ConnectionError> {
-        // TODO
+    fn on_data(&mut self, data: frames::Data) -> Result<AsyncHandle<Frame>, ConnectionError> {
+        let stream_id = data.stream_id;
+
+        let stream_state = match self.stream_states.get_mut(&stream_id) {
+            None => return Err(ConnectionError::InvalidStreamId),
+            Some(state) => state,
+        };
+        let sender = self.stream_senders.get_mut(&stream_id).unwrap();
+        if let Async::NotReady = sender.poll_ready().map_err(|_| ConnectionError::General)? {
+            return Ok(AsyncHandle::NotReady(Frame::Data(data)));
+        }
+
+        let frame_size = data.payload_ref().len() as u32;
+        if !stream_state.credits.has_capacity(frame_size) {
+            return Err(ConnectionError::InsufficientCredit);
+        }
+        stream_state.credits.use_credit(frame_size);
+
+        // TODO should really leverage futures executor for this logic
+        if let Err(err) = sender.try_send(frames::Frame::Data(data)) {
+            return Ok(AsyncHandle::NotReady(err.into_inner()))
+        }
+
         Ok(AsyncHandle::Ready)
     }
 
