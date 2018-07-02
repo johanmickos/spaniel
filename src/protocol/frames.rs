@@ -6,8 +6,12 @@ use stream::StreamId;
 use bytes::Bytes;
 use bytes::BufMut;
 use bytes::Buf;
+use bytes::IntoBuf;
+use std::fmt::Debug;
 
 pub const MAGIC_NUM: u32 = 0xC0A1BA11;
+// (frame length) + (magic # length) + (frame type)
+pub const FRAME_HEAD_LEN: u32 = 4 + 4 + 1;
 
 #[derive(Debug)]
 pub enum FramingError {
@@ -35,6 +39,41 @@ pub enum Frame {
 
     /// Catch-all for unknown frame types
     Unknown,
+}
+
+impl Frame {
+    pub fn frame_type(&self) -> FrameType {
+        match *self {
+            Frame::StreamRequest(_) => FrameType::StreamRequest,
+            Frame::CreditUpdate(_)  => FrameType::CreditUpdate,
+            Frame::Data(_)          => FrameType::Data,
+            Frame::Ping( .. )       => FrameType::Ping,
+            Frame::Pong( .. )       => FrameType::Pong,
+            Frame::Unknown          => FrameType::Unknown,
+        }
+    }
+
+    pub fn decode_from<B: IntoBuf + Debug>(buf: B) -> Result<Self, FramingError> {
+        let mut buf = buf.into_buf();
+        let head = FrameHead::decode_from(&mut buf)?;
+        match head.frame_type {
+            FrameType::StreamRequest    => StreamRequest::decode_from(&mut buf),
+            FrameType::Data             => Data::decode_from(&mut buf),
+            FrameType::CreditUpdate     => CreditUpdate::decode_from(&mut buf),
+            _ => unimplemented!()
+        }
+    }
+}
+
+pub trait FrameExt {
+    fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError>;
+    fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()>;
+}
+
+// Head of each frame
+#[derive(Debug)]
+pub struct FrameHead {
+    frame_type: FrameType,
 }
 
 #[derive(Debug)]
@@ -82,6 +121,46 @@ impl From<u8> for FrameType {
     }
 }
 
+impl FrameHead {
+    pub fn new(frame_type: FrameType) -> Self {
+        FrameHead {
+            frame_type,
+        }
+    }
+
+    // Encodes own fields and entire frame length into `dst`.
+    // This conforms to the length_delimited decoder found in the framed writer
+    pub fn encode_into<B: BufMut>(&self, dst: &mut B, content_len: u32) {
+        assert!(dst.remaining_mut() >= FRAME_HEAD_LEN as usize);
+        // Represents total length, including bytes for encoding length
+        let len = FRAME_HEAD_LEN + content_len;
+        dst.put_u32_be(len);
+        dst.put_u32_be(MAGIC_NUM);
+        dst.put_u8(self.frame_type as u8);
+    }
+
+    pub fn decode_from<B: Buf>(src: &mut B) -> Result<Self, FramingError> {
+        // length_delimited's decoder will have parsed the length out of `src`, subtract that out
+        if src.remaining() < (FRAME_HEAD_LEN - 4) as usize {
+            return Err(FramingError::BufferCapacity);
+        }
+
+        let magic_check = src.get_u32_be();
+
+        if magic_check != MAGIC_NUM {
+            return Err(FramingError::InvalidMagicNum);
+        }
+
+        let frame_type: FrameType = src.get_u8().into();
+        let head = FrameHead::new(frame_type);
+        Ok(head)
+    }
+
+    pub fn frame_type(&self) -> FrameType {
+        self.frame_type
+    }
+}
+
 impl Data {
     pub fn new(stream_id: StreamId, seq_num: u32, payload: Bytes) -> Self {
         Data {
@@ -99,18 +178,21 @@ impl Data {
     pub fn payload_ref(&self) -> &Bytes {
         &self.payload
     }
+}
 
-    pub fn encode_into<B: BufMut>(&self, dst: &mut B) {
-        // NOTE: This method _COPIES_ the owned bytes into `dst` rather than extending with the owned bytes
-        let payload_len = Bytes::len(&self.payload);
-        assert!(dst.remaining_mut() >= (self.encoded_len()));
-        dst.put_u32_be(self.stream_id.into());
-        dst.put_u32_be(self.seq_num);
-        dst.put_u32_be(payload_len as u32);
-        dst.put_slice(&self.payload);
+
+impl FrameExt for StreamRequest {
+    fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {
+        unimplemented!()
     }
 
-    pub fn decode_from<B: Buf>(src: &mut B) -> Result<Self, FramingError> {
+    fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
+        unimplemented!()
+    }
+}
+
+impl FrameExt for Data {
+    fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {
         if src.remaining() < 12 {
             return Err(FramingError::InvalidFrame);
         }
@@ -123,6 +205,28 @@ impl Data {
             seq_num,
             payload,
         };
-        Ok(data_frame)
+        Ok(Frame::Data(data_frame))
+    }
+
+    fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
+        // NOTE: This method _COPIES_ the owned bytes into `dst` rather than extending with the owned bytes
+        let payload_len = Bytes::len(&self.payload);
+        assert!(dst.remaining_mut() >= (self.encoded_len()));
+        dst.put_u32_be(self.stream_id.into());
+        dst.put_u32_be(self.seq_num);
+        dst.put_u32_be(payload_len as u32);
+        dst.put_slice(&self.payload);
+        Ok(())
+    }
+}
+
+
+impl FrameExt for CreditUpdate {
+    fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {
+        unimplemented!()
+    }
+
+    fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
+        unimplemented!()
     }
 }

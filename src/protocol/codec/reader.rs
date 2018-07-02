@@ -6,6 +6,7 @@ use bytes::BytesMut;
 use futures::Poll;
 use futures::Async;
 use futures::Stream;
+use protocol::frames::FrameHead;
 
 /// Reads and decodes frames from the underlying `Stream`
 pub struct FrameReader<T> {
@@ -32,8 +33,7 @@ impl<T: AsyncRead> FrameReader<T> {
     /// This method assumes that the `bytes` represent a complete frame,
     /// successfully extracted by the `length_delimited` protocol.
     pub fn decode_frame(&self, bytes: BytesMut) -> Result<Frame, FramingError> {
-        // TODO
-        unimplemented!();
+        Frame::decode_from(bytes)
     }
 
     /// Attempts to extract bytes into a `Frame` from the underlying `AsyncRead`.
