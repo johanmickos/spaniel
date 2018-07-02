@@ -10,6 +10,7 @@ mod flow_control;
 mod protocol;
 mod stream;
 
+pub use connection::ConnectionDriver;
 
 #[cfg(test)]
 mod tests {

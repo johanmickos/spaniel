@@ -3,6 +3,9 @@
 
 use std;
 use stream::StreamId;
+use bytes::Bytes;
+use bytes::BufMut;
+use bytes::Buf;
 
 pub const MAGIC_NUM: u32 = 0xC0A1BA11;
 
@@ -36,18 +39,23 @@ pub enum Frame {
 
 #[derive(Debug)]
 pub struct StreamRequest {
-
+    pub stream_id: StreamId,
+    pub credit_capacity: u32,
 }
 
 #[derive(Debug)]
 pub struct CreditUpdate {
-
+    pub stream_id: StreamId,
+    pub credit: u32,
 }
 
 #[derive(Debug)]
-pub struct Data {
-
+pub struct Data<B = Bytes> {
+    pub stream_id: StreamId,
+    pub seq_num: u32,
+    pub payload: B,
 }
+
 
 /// Byte-mappings for frame types
 #[repr(u8)]
@@ -71,5 +79,50 @@ impl From<u8> for FrameType {
             0x05 => FrameType::Pong,
             _ => FrameType::Unknown,
         }
+    }
+}
+
+impl Data {
+    pub fn new(stream_id: StreamId, seq_num: u32, payload: Bytes) -> Self {
+        Data {
+            stream_id,
+            seq_num,
+            // TODO Could piggy-back "backlog" of buffers like Flink to proactively request more consumer buffers
+            payload,
+        }
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        4 + 4 + 4 + Bytes::len(&self.payload)
+    }
+
+    pub fn payload_ref(&self) -> &Bytes {
+        &self.payload
+    }
+
+    pub fn encode_into<B: BufMut>(&self, dst: &mut B) {
+        // NOTE: This method _COPIES_ the owned bytes into `dst` rather than extending with the owned bytes
+        let payload_len = Bytes::len(&self.payload);
+        assert!(dst.remaining_mut() >= (self.encoded_len()));
+        dst.put_u32_be(self.stream_id.into());
+        dst.put_u32_be(self.seq_num);
+        dst.put_u32_be(payload_len as u32);
+        dst.put_slice(&self.payload);
+    }
+
+    pub fn decode_from<B: Buf>(src: &mut B) -> Result<Self, FramingError> {
+        if src.remaining() < 12 {
+            return Err(FramingError::InvalidFrame);
+        }
+        let stream_id = src.get_u32_be().into();
+        let seq_num = src.get_u32_be();
+        let len = src.get_u32_be();
+        let payload = src.collect();
+        let data_frame = Data {
+            stream_id,
+            seq_num,
+            payload,
+        };
+        Ok(data_frame)
     }
 }
