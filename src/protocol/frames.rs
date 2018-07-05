@@ -63,11 +63,32 @@ impl Frame {
             _ => unimplemented!()
         }
     }
+
+    pub fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
+        let head = FrameHead::new(self.frame_type());
+        head.encode_into(dst, self.encoded_len() as u32);
+        match *self {
+            Frame::StreamRequest(ref frame) => frame.encode_into(dst),
+            Frame::CreditUpdate(ref frame) => frame.encode_into(dst),
+            Frame::Data(ref frame) => frame.encode_into(dst),
+            _ => Err(()),
+        }
+    }
+
+    pub fn encoded_len(&self) -> usize {
+        match *self {
+            Frame::StreamRequest(ref frame) => frame.encoded_len(),
+            Frame::CreditUpdate(ref frame) => frame.encoded_len(),
+            Frame::Data(ref frame) => frame.encoded_len(),
+            _ => 0
+        }
+    }
 }
 
 pub trait FrameExt {
     fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError>;
     fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()>;
+    fn encoded_len(&self) -> usize;
 }
 
 // Head of each frame
@@ -161,6 +182,15 @@ impl FrameHead {
     }
 }
 
+impl StreamRequest {
+    pub fn new(stream_id: StreamId, credit_capacity: u32) -> Self {
+        StreamRequest {
+            stream_id,
+            credit_capacity,
+        }
+    }
+}
+
 impl Data {
     pub fn new(stream_id: StreamId, seq_num: u32, payload: Bytes) -> Self {
         Data {
@@ -171,12 +201,21 @@ impl Data {
         }
     }
 
+    pub fn with_raw_payload(stream_id: StreamId, seq_num: u32, raw_bytes: &[u8]) -> Self {
+        Data::new(stream_id, seq_num, Bytes::from(raw_bytes))
+    }
+
     pub fn encoded_len(&self) -> usize {
         4 + 4 + 4 + Bytes::len(&self.payload)
     }
 
     pub fn payload_ref(&self) -> &Bytes {
         &self.payload
+    }
+
+    /// Consumes this frame and returns the raw payload buffer
+    pub fn payload(self) -> Bytes {
+        self.payload
     }
 }
 
@@ -196,7 +235,14 @@ impl FrameExt for StreamRequest {
     }
 
     fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
-        unimplemented!()
+        assert!(dst.remaining_mut() >= self.encoded_len());
+        dst.put_u32_be(self.stream_id.into());
+        dst.put_u32_be(self.credit_capacity);
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        4 + 4 //stream_id + credit_capacity
     }
 }
 
@@ -227,6 +273,10 @@ impl FrameExt for Data {
         dst.put_slice(&self.payload);
         Ok(())
     }
+
+    fn encoded_len(&self) -> usize {
+        4 + 4 + 4 + Bytes::len(&self.payload)
+    }
 }
 
 
@@ -237,5 +287,9 @@ impl FrameExt for CreditUpdate {
 
     fn encode_into<B: BufMut>(&self, dst: &mut B) -> Result<(), ()> {
         unimplemented!()
+    }
+
+    fn encoded_len(&self) -> usize {
+        4 + 4 // stream_id + credit
     }
 }

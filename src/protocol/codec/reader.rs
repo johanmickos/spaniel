@@ -2,11 +2,11 @@ use tokio_io::codec::length_delimited;
 use tokio_io::AsyncRead;
 use protocol::frames::Frame;
 use protocol::frames::FramingError;
-use bytes::BytesMut;
 use futures::Poll;
 use futures::Async;
 use futures::Stream;
 use protocol::frames::FrameHead;
+use bytes::BytesMut;
 
 /// Reads and decodes frames from the underlying `Stream`
 pub struct FrameReader<T> {

@@ -11,6 +11,7 @@ use futures::task;
 use futures::Async;
 use protocol::frames::Frame;
 use bytes::{Buf, Bytes, BytesMut, IntoBuf};
+use protocol::frames;
 
 const LOW_WATERMARK: usize = 32 * 1024;
 const HIGH_WATERMARK: usize = 64 * 1024;
@@ -255,14 +256,12 @@ impl<T: AsyncWrite> FrameWriter<T> {
     }
 
     pub fn buffer_frame(&mut self, frame: Frame) -> Result<(usize), WriteError> {
-        // TODO
-        unimplemented!();
-//        let size = frame.encoded_len() + frames::FRAME_HEAD_LEN as usize;
+        let size = frame.encoded_len() + frames::FRAME_HEAD_LEN as usize;
 //        // TODO buffer provider
-//        let mut buf = BytesMut::with_capacity(size);
-//        frame.encode_into(&mut buf);
-//        let buf = buf.freeze();
-//        self.writer.buffer_data(buf)
+        let mut buf = BytesMut::with_capacity(size);
+        frame.encode_into(&mut buf);
+        let buf = buf.freeze();
+        self.writer.buffer_data(buf)
     }
 
     pub fn buffer_and_flush(&mut self, frame: Frame) -> Poll<(usize), WriteError> {

@@ -20,7 +20,7 @@ use futures::sync::mpsc::Sender;
 use futures::sync::mpsc;
 use futures::sync::mpsc::Receiver;
 use std::collections::VecDeque;
-use flow_control::Credits;
+use flow_control::{Credits, FlowControlStrategy};
 use futures::sync::mpsc::TrySendError;
 
 
@@ -46,16 +46,30 @@ impl From<FramingError> for ConnectionError {
     }
 }
 
+#[derive(Debug)]
+pub struct ConnectionConfig {
+    flow_control_strategy: FlowControlStrategy ,
+}
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        ConnectionConfig {
+            flow_control_strategy: FlowControlStrategy::Disabled
+        }
+    }
+}
+
 /// Tracks connection-related state needed for driving I/O progress
+#[derive(Debug)]
 pub struct ConnectionContext {
+    cfg: ConnectionConfig,
     /// ID of this connection
     id: ConnectionId,
     /// Stores the current connection error, if there is one
     err: Option<ConnectionError>,
     /// Stream management store
-    stream_states: HashMap<StreamId, StreamState>,
+    pub(crate) stream_states: HashMap<StreamId, StreamState>,
     /// Channels for forwarding decoded frames to application
-    stream_senders: HashMap<StreamId, Sender<frames::Frame>>,
+    pub(crate) stream_senders: HashMap<StreamId, Sender<frames::Frame>>,
     /// Channel for submitting frames for writing over the network
     outbound: Sender<Frame>,
     outbound_listener: Receiver<Frame>,
@@ -78,6 +92,7 @@ impl ConnectionContext {
     pub fn new(id: ConnectionId) -> Self {
         let (tx, rx) = mpsc::channel(1024);
         ConnectionContext {
+            cfg: ConnectionConfig::default(), // TODO custommize
             id,
             err: None,
             conn_task: None,
@@ -146,10 +161,12 @@ impl ConnectionContext {
         }
 
         let frame_size = data.payload_ref().len() as u32;
-        if !stream_state.credits.has_capacity(frame_size) {
-            return Err(ConnectionError::InsufficientCredit);
+        if self.cfg.flow_control_strategy != FlowControlStrategy::Disabled {
+            if !stream_state.credits.has_capacity(frame_size) {
+                return Err(ConnectionError::InsufficientCredit);
+            }
+            stream_state.credits.use_credit(frame_size);
         }
-        stream_state.credits.use_credit(frame_size);
 
         // TODO should really leverage futures executor for this logic
         if let Err(err) = sender.try_send(frames::Frame::Data(data)) {
@@ -223,7 +240,6 @@ impl ConnectionContext {
 
     pub fn send_frame(&mut self, frame: Frame) -> Result<(), ConnectionError> {
         if let Frame::Data(ref data) = frame {
-            // TODO refactor around this flag
             // Flow control checks
             let stream_state = match self.stream_states.get_mut(&data.stream_id) {
                 None => {
@@ -232,11 +248,14 @@ impl ConnectionContext {
                 Some(state) => state,
             };
 
-            let size = data.payload_ref().len() as u32;
-            if !stream_state.credits.has_capacity(size) {
-                return Err(ConnectionError::InsufficientCredit);
+            // TODO move into own FC module
+            if self.cfg.flow_control_strategy != FlowControlStrategy::Disabled {
+                let size = data.payload_ref().len() as u32;
+                if !stream_state.credits.has_capacity(size) {
+                    return Err(ConnectionError::InsufficientCredit);
+                }
+                stream_state.credits.use_credit(size);
             }
-            stream_state.credits.use_credit(size);
         }
         // TODO handle res error
         let res = self.outbound.try_send(frame);

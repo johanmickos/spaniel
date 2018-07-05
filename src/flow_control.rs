@@ -1,6 +1,17 @@
 pub const FC_NUMERATOR: u32 = 1;
 pub const FC_DENOMINATOR: u32 = 2;
 
+// TODO: flow control strategies to allow user to disable FC checks (dynamically, per-stream?)
+#[derive(Debug, PartialEq, Clone)]
+pub enum FlowControlStrategy {
+    Disabled,
+    CreditBased(FlowControlRatio)
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct FlowControlRatio(u32, u32);
+
+#[derive(Debug)]
 pub struct Credits {
     pub(crate) capacity: u32,
     available: u32,

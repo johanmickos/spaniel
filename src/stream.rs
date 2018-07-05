@@ -9,6 +9,8 @@ use flow_control::FC_NUMERATOR;
 use flow_control::FC_DENOMINATOR;
 use futures::Async;
 use futures::Poll;
+use connection::ConnectionError;
+use protocol::frames::Frame;
 
 #[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct StreamId(pub u32);
@@ -40,6 +42,7 @@ impl From<u32> for StreamId {
 }
 
 /// Data structure tracking an individual stream
+#[derive(Debug)]
 pub struct StreamState {
     pub credits: Credits,
     pub data_buffer: VecDeque<frames::Data>,
@@ -87,6 +90,16 @@ pub struct StreamRef {
 
 impl StreamRef {
 
+    pub fn clone_ctx(&self) -> SharedConnectionContext {
+        self.ctx.clone()
+    }
+
+    pub fn send_frame(&mut self, frame: Frame) -> Result<(), ConnectionError> {
+        let mut ctx = self.ctx.lock().unwrap();
+        let ctx = &mut *ctx;
+        ctx.send_frame(frame)
+    }
+
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
@@ -127,6 +140,15 @@ impl StreamRef {
             // TODO handle
         }));
         Ok(())
+    }
+}
+
+impl Clone for StreamRef {
+    fn clone(&self) -> Self {
+        StreamRef {
+            stream_id: self.stream_id,
+            ctx: self.ctx.clone(),
+        }
     }
 }
 
@@ -175,5 +197,45 @@ impl futures::Stream for StreamRef {
         me.data.poll().map_err(|why| {
             println!("Error polling for data; {:?}", why);
         })
+    }
+}
+
+impl futures::Future for StreamRequester {
+    type Item = StreamRef;
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        {
+            let mut ctx = self.ctx.lock().unwrap();
+            let ctx = &mut *ctx;
+
+            match ctx.get_stream_state_mut(&self.stream_id) {
+                Some(_) => return Err(()), // TODO StreamAlreadyExists
+                None => (),
+            };
+            let (tx, rx) = futures::sync::mpsc::channel(1);
+            let state = StreamState {
+                data_buffer: VecDeque::new(),
+                credits: Credits::new(self.credit),
+                send_task: None,
+                recv_task: None,
+                data: rx,
+            };
+            ctx.stream_senders.insert(self.stream_id, tx);
+            ctx.stream_states.insert(self.stream_id, state);
+            let sr = frames::StreamRequest::new(self.stream_id, self.credit);
+
+            // TODO this should really be driven by the ConnectionDriver's IoHandle to get appropriate
+            // TODO feedback on success :-\
+            ctx.send_frame(frames::Frame::StreamRequest(sr)).map_err(|_| ())?;
+        }
+
+        let stream = StreamRef {
+            stream_id: self.stream_id,
+            ctx: self.ctx.clone(),
+        };
+
+        // Hand off ownership of this stream
+        Ok(Async::Ready(stream))
     }
 }
