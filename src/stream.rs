@@ -1,16 +1,16 @@
-use std::collections::VecDeque;
-use futures::sync::mpsc::Receiver;
-use protocol::frames;
-use futures::task::{self, Task};
-use futures;
-use flow_control::Credits;
+use connection::ConnectionError;
 use connection::SharedConnectionContext;
-use flow_control::FC_NUMERATOR;
+use flow_control::Credits;
 use flow_control::FC_DENOMINATOR;
+use flow_control::FC_NUMERATOR;
+use futures;
+use futures::sync::mpsc::Receiver;
+use futures::task::{self, Task};
 use futures::Async;
 use futures::Poll;
-use connection::ConnectionError;
+use protocol::frames;
 use protocol::frames::Frame;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, Hash, Ord, PartialOrd, Eq, PartialEq)]
 pub struct StreamId(pub u32);
@@ -70,9 +70,8 @@ pub struct IncomingStreams {
     ctx: SharedConnectionContext,
 }
 
-
 impl IncomingStreams {
-    pub fn new(ctx: SharedConnectionContext) ->  Self {
+    pub fn new(ctx: SharedConnectionContext) -> Self {
         IncomingStreams { ctx }
     }
 }
@@ -89,7 +88,6 @@ pub struct StreamRef {
 }
 
 impl StreamRef {
-
     pub fn clone_ctx(&self) -> SharedConnectionContext {
         self.ctx.clone()
     }
@@ -135,10 +133,12 @@ impl StreamRef {
                 None
             }
         };
-        credit_update.map(|frame| ctx.send_frame(frame).map_err(|err| {
-            println!("Could not send credit frame!! {:?}", err);
-            // TODO handle
-        }));
+        credit_update.map(|frame| {
+            ctx.send_frame(frame).map_err(|err| {
+                println!("Could not send credit frame!! {:?}", err);
+                // TODO handle
+            })
+        });
         Ok(())
     }
 }
@@ -227,7 +227,8 @@ impl futures::Future for StreamRequester {
 
             // TODO this should really be driven by the ConnectionDriver's IoHandle to get appropriate
             // TODO feedback on success :-\
-            ctx.send_frame(frames::Frame::StreamRequest(sr)).map_err(|_| ())?;
+            ctx.send_frame(frames::Frame::StreamRequest(sr))
+                .map_err(|_| ())?;
         }
 
         let stream = StreamRef {

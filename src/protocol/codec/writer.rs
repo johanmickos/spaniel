@@ -1,17 +1,17 @@
 //! Buffer-backed writer based on Netty's `ChannelOutboundBuffer` and writing/flushing semantics.
 
-use std;
-use std::fmt::Formatter;
-use std::error::Error;
-use protocol::codec::buffer::OutboundBuffer;
-use futures::task::Task;
-use tokio_io::AsyncWrite;
-use futures::Poll;
-use futures::task;
-use futures::Async;
-use protocol::frames::Frame;
 use bytes::{Buf, Bytes, BytesMut, IntoBuf};
+use futures::task;
+use futures::task::Task;
+use futures::Async;
+use futures::Poll;
+use protocol::codec::buffer::OutboundBuffer;
 use protocol::frames;
+use protocol::frames::Frame;
+use std;
+use std::error::Error;
+use std::fmt::Formatter;
+use tokio_io::AsyncWrite;
 
 const LOW_WATERMARK: usize = 32 * 1024;
 const HIGH_WATERMARK: usize = 64 * 1024;
@@ -31,10 +31,7 @@ impl From<(usize, usize)> for Watermarks {
                 high: low,
             }
         } else {
-            Watermarks {
-                low,
-                high,
-            }
+            Watermarks { low, high }
         }
     }
 }
@@ -47,12 +44,11 @@ pub enum WriteError {
     Io,
 }
 
-
 impl std::error::Error for WriteError {
     fn description(&self) -> &str {
         match *self {
             WriteError::HighWatermark => "Buffering would exceed high watermark",
-            WriteError::NotReady(ref data) => "Writer is not ready",
+            WriteError::NotReady(_) => "Writer is not ready",
             WriteError::WouldBlock => "Writer would block",
             WriteError::Io => "I/O error",
         }
@@ -65,13 +61,11 @@ impl std::fmt::Display for WriteError {
     }
 }
 
-
 impl From<WriteError> for std::io::Error {
     fn from(src: WriteError) -> Self {
         std::io::Error::new(std::io::ErrorKind::WouldBlock, src)
     }
 }
-
 
 #[derive(PartialOrd, PartialEq)]
 pub enum WriteState {
@@ -101,8 +95,6 @@ pub struct Writer<T, B: IntoBuf = Bytes> {
 
     /// Tracks the writer's current state
     write_state: WriteState,
-    /// Indicates whether the writer needs to flush its buffered contents to the destination
-    need_flush: bool,
     /// Counter of the number of bytes waiting to be written TODO
     pending_bytes: usize,
     /// Task which waits for watermark progress on this writer
@@ -118,7 +110,6 @@ impl<T: AsyncWrite> Writer<T> {
             buffer: OutboundBuffer::with_capacity(INIT_BUF_CAPACITY),
             current: None,
             write_state: WriteState::Writable,
-            need_flush: false,
             pending_bytes: 0,
             waiting_task: None,
             watermarks: (LOW_WATERMARK, HIGH_WATERMARK).into(),
@@ -164,7 +155,10 @@ impl<T: AsyncWrite> Writer<T> {
     /// An IO error is returned if the writer has encountered an error prior to this call.
     pub fn poll_buffer_ready(&mut self) -> Poll<(), std::io::Error> {
         if let WriteState::Error = self.write_state {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "writer error"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "writer error",
+            ));
         } else if self.write_state == WriteState::HighWatermarkReached {
             self.poll_flush()?;
 
@@ -176,7 +170,6 @@ impl<T: AsyncWrite> Writer<T> {
         }
         Ok(Async::Ready(()))
     }
-
 
     /// Returns whether the current buffer has bytes remaining to be written
     pub fn has_remaining(&self) -> bool {
@@ -257,9 +250,9 @@ impl<T: AsyncWrite> FrameWriter<T> {
 
     pub fn buffer_frame(&mut self, frame: Frame) -> Result<(usize), WriteError> {
         let size = frame.encoded_len() + frames::FRAME_HEAD_LEN as usize;
-//        // TODO buffer provider
+        // TODO buffer provider
         let mut buf = BytesMut::with_capacity(size);
-        frame.encode_into(&mut buf);
+        let _res = frame.encode_into(&mut buf);
         let buf = buf.freeze();
         self.writer.buffer_data(buf)
     }
@@ -267,12 +260,8 @@ impl<T: AsyncWrite> FrameWriter<T> {
     pub fn buffer_and_flush(&mut self, frame: Frame) -> Poll<(usize), WriteError> {
         let remaining = self.buffer_frame(frame)?;
         match self.writer.poll_flush().map_err(|_| WriteError::Io)? {
-            Async::Ready(_) => {
-                Ok(Async::Ready(remaining))
-            }
-            Async::NotReady => {
-                Ok(Async::NotReady)
-            }
+            Async::Ready(_) => Ok(Async::Ready(remaining)),
+            Async::NotReady => Ok(Async::NotReady),
         }
     }
 }

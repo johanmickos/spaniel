@@ -1,13 +1,13 @@
 //! Frames are the core of the message transport layer, allowing applications to build
 //! custom protocols atop this library.
 
-use std;
-use stream::StreamId;
-use bytes::Bytes;
-use bytes::BufMut;
 use bytes::Buf;
+use bytes::BufMut;
+use bytes::Bytes;
 use bytes::IntoBuf;
+use std;
 use std::fmt::Debug;
+use stream::StreamId;
 
 pub const MAGIC_NUM: u32 = 0xC0A1BA11;
 // (frame length) + (magic # length) + (frame type)
@@ -45,11 +45,11 @@ impl Frame {
     pub fn frame_type(&self) -> FrameType {
         match *self {
             Frame::StreamRequest(_) => FrameType::StreamRequest,
-            Frame::CreditUpdate(_)  => FrameType::CreditUpdate,
-            Frame::Data(_)          => FrameType::Data,
-            Frame::Ping( .. )       => FrameType::Ping,
-            Frame::Pong( .. )       => FrameType::Pong,
-            Frame::Unknown          => FrameType::Unknown,
+            Frame::CreditUpdate(_) => FrameType::CreditUpdate,
+            Frame::Data(_) => FrameType::Data,
+            Frame::Ping(..) => FrameType::Ping,
+            Frame::Pong(..) => FrameType::Pong,
+            Frame::Unknown => FrameType::Unknown,
         }
     }
 
@@ -57,10 +57,20 @@ impl Frame {
         let mut buf = buf.into_buf();
         let head = FrameHead::decode_from(&mut buf)?;
         match head.frame_type {
-            FrameType::StreamRequest    => StreamRequest::decode_from(&mut buf),
-            FrameType::Data             => Data::decode_from(&mut buf),
-            FrameType::CreditUpdate     => CreditUpdate::decode_from(&mut buf),
-            _ => unimplemented!()
+            FrameType::StreamRequest => StreamRequest::decode_from(&mut buf),
+            FrameType::Data => Data::decode_from(&mut buf),
+            FrameType::CreditUpdate => CreditUpdate::decode_from(&mut buf),
+            FrameType::Ping => {
+                let id = buf.get_u32_be();
+                let stream = buf.get_u32_be().into();
+                Ok(Frame::Ping(id, stream))
+            }
+            FrameType::Pong => {
+                let id = buf.get_u32_be();
+                let stream = buf.get_u32_be().into();
+                Ok(Frame::Pong(id, stream))
+            }
+            _ => unimplemented!(),
         }
     }
 
@@ -71,16 +81,27 @@ impl Frame {
             Frame::StreamRequest(ref frame) => frame.encode_into(dst),
             Frame::CreditUpdate(ref frame) => frame.encode_into(dst),
             Frame::Data(ref frame) => frame.encode_into(dst),
+            Frame::Ping(id, stream) => {
+                dst.put_u32_be(id);
+                dst.put_u32_be(stream.into());
+                Ok(())
+            }
+            Frame::Pong(id, stream) => {
+                dst.put_u32_be(id);
+                dst.put_u32_be(stream.into());
+                Ok(())
+            }
             _ => Err(()),
         }
     }
 
+    /// Returns the number of bytes required to serialize this frame
     pub fn encoded_len(&self) -> usize {
         match *self {
             Frame::StreamRequest(ref frame) => frame.encoded_len(),
             Frame::CreditUpdate(ref frame) => frame.encoded_len(),
             Frame::Data(ref frame) => frame.encoded_len(),
-            _ => 0
+            _ => 0,
         }
     }
 }
@@ -116,17 +137,16 @@ pub struct Data<B = Bytes> {
     pub payload: B,
 }
 
-
 /// Byte-mappings for frame types
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Ord, PartialOrd, Eq)]
 pub enum FrameType {
-    StreamRequest   = 0x01,
-    Data            = 0x02,
-    CreditUpdate    = 0x03,
-    Ping            = 0x04,
-    Pong            = 0x05,
-    Unknown,        // Not needed
+    StreamRequest = 0x01,
+    Data = 0x02,
+    CreditUpdate = 0x03,
+    Ping = 0x04,
+    Pong = 0x05,
+    Unknown, // Not needed
 }
 
 impl From<u8> for FrameType {
@@ -144,18 +164,17 @@ impl From<u8> for FrameType {
 
 impl FrameHead {
     pub fn new(frame_type: FrameType) -> Self {
-        FrameHead {
-            frame_type,
-        }
+        FrameHead { frame_type }
     }
 
     // Encodes own fields and entire frame length into `dst`.
     // This conforms to the length_delimited decoder found in the framed writer
-    pub fn encode_into<B: BufMut>(&self, dst: &mut B, content_len: u32) {
+    pub fn encode_into<B: BufMut>(&self, dst: &mut B, _content_len: u32) {
         assert!(dst.remaining_mut() >= FRAME_HEAD_LEN as usize);
         // Represents total length, including bytes for encoding length
-        let len = FRAME_HEAD_LEN + content_len;
-        dst.put_u32_be(len);
+        // NOTE: This is not needed, and thus commented out, if length_delimited is also used for writing (as in the kompcis code)
+        //        let len = FRAME_HEAD_LEN + content_len;
+        //        dst.put_u32_be(len);
         dst.put_u32_be(MAGIC_NUM);
         dst.put_u8(self.frame_type as u8);
     }
@@ -179,6 +198,10 @@ impl FrameHead {
 
     pub fn frame_type(&self) -> FrameType {
         self.frame_type
+    }
+
+    pub fn encoded_len() -> usize {
+        FRAME_HEAD_LEN as usize
     }
 }
 
@@ -219,7 +242,6 @@ impl Data {
     }
 }
 
-
 impl FrameExt for StreamRequest {
     fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {
         if src.remaining() < 8 {
@@ -253,7 +275,7 @@ impl FrameExt for Data {
         }
         let stream_id = src.get_u32_be().into();
         let seq_num = src.get_u32_be();
-        let len = src.get_u32_be();
+        let _len = src.get_u32_be();
         let payload = src.collect();
         let data_frame = Data {
             stream_id,
@@ -278,7 +300,6 @@ impl FrameExt for Data {
         4 + 4 + 4 + Bytes::len(&self.payload)
     }
 }
-
 
 impl FrameExt for CreditUpdate {
     fn decode_from<B: Buf>(src: &mut B) -> Result<Frame, FramingError> {

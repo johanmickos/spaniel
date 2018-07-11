@@ -1,12 +1,11 @@
-use tokio_io::codec::length_delimited;
-use tokio_io::AsyncRead;
+use bytes::BytesMut;
+use futures::Async;
+use futures::Poll;
+use futures::Stream;
 use protocol::frames::Frame;
 use protocol::frames::FramingError;
-use futures::Poll;
-use futures::Async;
-use futures::Stream;
-use protocol::frames::FrameHead;
-use bytes::BytesMut;
+use tokio_io::codec::length_delimited;
+use tokio_io::AsyncRead;
 
 /// Reads and decodes frames from the underlying `Stream`
 pub struct FrameReader<T> {
@@ -23,9 +22,7 @@ impl<T: AsyncRead> FrameReader<T> {
             .length_field_offset(0)
             .length_field_length(4)
             .new_read(src);
-        FrameReader {
-            src
-        }
+        FrameReader { src }
     }
 
     /// Decodes a `Frame` object from the provided `bytes`.
@@ -39,9 +36,7 @@ impl<T: AsyncRead> FrameReader<T> {
     /// Attempts to extract bytes into a `Frame` from the underlying `AsyncRead`.
     pub fn poll_frame(&mut self) -> Poll<Option<Frame>, FramingError> {
         // Extract bytes from underlying source, delegating Async::NotReady responsibility to it
-        let bytes_res = try_ready!(self.src.poll().map_err(|err| {
-            FramingError::Io(err)
-        }));
+        let bytes_res = try_ready!(self.src.poll().map_err(|err| FramingError::Io(err)));
 
         match bytes_res {
             Some(bytes) => {
@@ -55,7 +50,6 @@ impl<T: AsyncRead> FrameReader<T> {
         }
     }
 }
-
 
 /// Continuous `Frame` stream wrapper around the `FrameReader`
 impl<T: AsyncRead> Stream for FrameReader<T> {

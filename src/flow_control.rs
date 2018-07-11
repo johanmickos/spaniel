@@ -5,7 +5,7 @@ pub const FC_DENOMINATOR: u32 = 2;
 #[derive(Debug, PartialEq, Clone)]
 pub enum FlowControlStrategy {
     Disabled,
-    CreditBased(FlowControlRatio)
+    CreditBased(FlowControlRatio),
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -71,5 +71,3 @@ impl Credits {
         self.available
     }
 }
-
-

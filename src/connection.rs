@@ -1,28 +1,26 @@
-use futures::task::Task;
-use std::collections::HashMap;
-use stream::StreamId;
-use stream::StreamState;
-use protocol::frames::FramingError;
-use protocol::frames::Frame;
-use protocol::frames;
-use tokio_io::AsyncRead;
-use tokio_io::AsyncWrite;
-use std::sync::Mutex;
-use std::sync::Arc;
-use protocol::codec::writer::FrameWriter;
-use protocol::codec::reader::FrameReader;
-use futures::Poll;
-use futures::Async;
-use futures::task;
-use futures::Future;
-use stream::IncomingStreams;
-use futures::sync::mpsc::Sender;
+use flow_control::{Credits, FlowControlStrategy};
 use futures::sync::mpsc;
 use futures::sync::mpsc::Receiver;
+use futures::sync::mpsc::Sender;
+use futures::task;
+use futures::task::Task;
+use futures::Async;
+use futures::Future;
+use futures::Poll;
+use protocol::codec::reader::FrameReader;
+use protocol::codec::writer::FrameWriter;
+use protocol::frames;
+use protocol::frames::Frame;
+use protocol::frames::FramingError;
+use std::collections::HashMap;
 use std::collections::VecDeque;
-use flow_control::{Credits, FlowControlStrategy};
-use futures::sync::mpsc::TrySendError;
-
+use std::sync::Arc;
+use std::sync::Mutex;
+use stream::IncomingStreams;
+use stream::StreamId;
+use stream::StreamState;
+use tokio_io::AsyncRead;
+use tokio_io::AsyncWrite;
 
 type ConnectionId = u32;
 
@@ -41,19 +39,19 @@ impl From<()> for ConnectionError {
 }
 
 impl From<FramingError> for ConnectionError {
-    fn from(err: FramingError) -> Self {
+    fn from(_err: FramingError) -> Self {
         ConnectionError::General
     }
 }
 
 #[derive(Debug)]
 pub struct ConnectionConfig {
-    flow_control_strategy: FlowControlStrategy ,
+    flow_control_strategy: FlowControlStrategy,
 }
 impl Default for ConnectionConfig {
     fn default() -> Self {
         ConnectionConfig {
-            flow_control_strategy: FlowControlStrategy::Disabled
+            flow_control_strategy: FlowControlStrategy::Disabled,
         }
     }
 }
@@ -121,8 +119,12 @@ impl ConnectionContext {
         }
     }
 
-    fn on_stream_request(&mut self, request: frames::StreamRequest) -> Result<AsyncHandle<Frame>, ConnectionError> {
+    fn on_stream_request(
+        &mut self,
+        request: frames::StreamRequest,
+    ) -> Result<AsyncHandle<Frame>, ConnectionError> {
         let stream_id = request.stream_id;
+        println!("on_stream_request {:?}", stream_id);
         match self.stream_states.get_mut(&stream_id) {
             Some(_) => return Err(ConnectionError::InvalidStreamId),
             None => (),
@@ -143,7 +145,10 @@ impl ConnectionContext {
         Ok(AsyncHandle::Ready)
     }
 
-    fn on_credit_update(&mut self, request: frames::CreditUpdate) -> Result<AsyncHandle<Frame>, ConnectionError> {
+    fn on_credit_update(
+        &mut self,
+        _request: frames::CreditUpdate,
+    ) -> Result<AsyncHandle<Frame>, ConnectionError> {
         // TODO
         Ok(AsyncHandle::Ready)
     }
@@ -165,17 +170,16 @@ impl ConnectionContext {
             if !stream_state.credits.has_capacity(frame_size) {
                 return Err(ConnectionError::InsufficientCredit);
             }
-            stream_state.credits.use_credit(frame_size);
+            let _res = stream_state.credits.use_credit(frame_size);
         }
 
         // TODO should really leverage futures executor for this logic
         if let Err(err) = sender.try_send(frames::Frame::Data(data)) {
-            return Ok(AsyncHandle::NotReady(err.into_inner()))
+            return Ok(AsyncHandle::NotReady(err.into_inner()));
         }
 
         Ok(AsyncHandle::Ready)
     }
-
 
     /// Returns true if the connection has an error
     pub fn has_err(&self) -> bool {
@@ -211,14 +215,17 @@ impl ConnectionContext {
     }
 
     /// Returns the number of credits available for the stream, or `Async::NotReady` if there are none.
-     ///
-     /// Upon returning `Async::NotReady` the current task is stored and will be woken up once
-     /// additional credits are assigned in `on_credit_update`.
+    ///
+    /// Upon returning `Async::NotReady` the current task is stored and will be woken up once
+    /// additional credits are assigned in `on_credit_update`.
     pub fn poll_stream_capacity(&mut self, stream_id: StreamId) -> Poll<u32, ConnectionError> {
         if self.has_err() {
             return Err(ConnectionError::General);
         }
-        try_ready!(self.poll_conn_capacity().map_err(|_| ConnectionError::InsufficientCredit));
+        try_ready!(
+            self.poll_conn_capacity()
+                .map_err(|_| ConnectionError::InsufficientCredit)
+        );
         let stream_state = match self.stream_states.get_mut(&stream_id) {
             None => {
                 return Err(ConnectionError::InvalidStreamId);
@@ -233,6 +240,9 @@ impl ConnectionContext {
         Ok(Async::Ready(remaining))
     }
 
+    pub fn sender(&self) -> Sender<Frame> {
+        self.outbound.clone()
+    }
 
     pub fn poll_conn_capacity(&mut self) -> Poll<(), ()> {
         self.outbound.poll_ready().map_err(|_| ())
@@ -254,11 +264,11 @@ impl ConnectionContext {
                 if !stream_state.credits.has_capacity(size) {
                     return Err(ConnectionError::InsufficientCredit);
                 }
-                stream_state.credits.use_credit(size);
+                let _res = stream_state.credits.use_credit(size);
             }
         }
         // TODO handle res error
-        let res = self.outbound.try_send(frame);
+        let _res = self.outbound.try_send(frame);
         self.notify_conn_task();
         Ok(())
     }
@@ -269,17 +279,16 @@ impl ConnectionContext {
         try_ready!(tx.poll_buffer_ready().map_err(|_| ()));
 
         while let Some(frame) = try_ready!(self.outbound_listener.poll()) {
-            let res = try_ready!(tx.buffer_and_flush(frame).map_err(|_| ()));
+            // TODO handle err
+            let _res = try_ready!(tx.buffer_and_flush(frame).map_err(|_| ()));
             try_ready!(tx.poll_buffer_ready().map_err(|_| ()));
         }
         Ok(Async::Ready(()))
     }
-
 }
 
-
 pub type SharedConnectionContext = Arc<Mutex<ConnectionContext>>;
-pub type SharedFrameWriter<O: AsyncWrite> = Arc<Mutex<FrameWriter<O>>>;
+pub type SharedFrameWriter<O> = Arc<Mutex<FrameWriter<O>>>;
 
 struct IoHandle<I: AsyncRead, O: AsyncWrite> {
     rx: FrameReader<I>,
@@ -305,11 +314,9 @@ pub struct ConnectionDriver<I: AsyncRead, O: AsyncWrite> {
     head_of_line: Option<Frame>,
 }
 
-
-
 impl<I: AsyncRead, O: AsyncWrite> ConnectionDriver<I, O> {
     pub fn with_io(reader: I, writer: O, id: u32) -> Self {
-        let mut ctx = ConnectionContext::new(id);
+        let ctx = ConnectionContext::new(id);
         let ctx = Arc::new(Mutex::new(ctx));
         let handle = IoHandle::new(reader, writer);
 
@@ -334,7 +341,6 @@ impl<I: AsyncRead, O: AsyncWrite> ConnectionDriver<I, O> {
     }
 
     pub fn poll_read_progress(&mut self) -> Poll<(), ConnectionError> {
-        use protocol::frames::Frame::*;
         use std::borrow::BorrowMut;
 
         let rx = self.handle.rx.borrow_mut();
@@ -342,9 +348,7 @@ impl<I: AsyncRead, O: AsyncWrite> ConnectionDriver<I, O> {
         loop {
             // Continue looping until error, connection is closed, or there is nothing more to read
             let cur = match self.head_of_line.take() {
-                None => {
-                    try_ready!(rx.poll_frame())
-                }
+                None => try_ready!(rx.poll_frame()),
                 Some(head) => Some(head),
             };
             match cur {
@@ -369,6 +373,7 @@ impl<I: AsyncRead, O: AsyncWrite> ConnectionDriver<I, O> {
     // TODO errors
     pub fn poll_write_progress(&mut self) -> Poll<(), ()> {
         let mut ctx = self.ctx.lock().unwrap();
+        println!("poll write progress");
         let ctx = &mut *ctx;
 
         let mut tx = self.handle.tx.lock().unwrap();

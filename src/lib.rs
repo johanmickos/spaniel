@@ -4,6 +4,10 @@ extern crate futures;
 extern crate tokio_io;
 extern crate tokio_tcp;
 
+pub mod bytes_ext {
+    pub use bytes::*;
+}
+
 mod buffer;
 pub mod connection;
 pub(crate) mod flow_control;
@@ -14,7 +18,12 @@ pub use connection::ConnectionDriver;
 
 pub mod frames {
     pub use protocol::frames::Frame;
-    pub use protocol::frames::{Data};
+    pub use protocol::frames::{Data, FrameHead, StreamRequest};
+}
+
+// Export codec-specific details
+pub mod codec {
+    pub use protocol::codec::FrameCodec;
 }
 
 #[cfg(test)]
