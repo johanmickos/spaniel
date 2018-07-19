@@ -4,12 +4,11 @@ version = "0.1.0"
 authors = ["Johan Mickos <johanmi@kth.se>"]
 
 [dependencies]
-bytes = "0.4.7"
+bytes = "0.4.8"
 byteorder = "1.1"
 futures = "0.1.21"
 
-tokio-tcp = "0.1.0"
-tokio-executor = "0.1.2"
-tokio-threadpool = "0.1.2"
-tokio-io = "0.1.6"
-tokio-timer = "0.2.3"
+[dependencies.tokio-io]
+git = "https://github.com/jarlopez/tokio"
+branch = "bytes-v0.4.8-migration"
+path = "tokio-io"
